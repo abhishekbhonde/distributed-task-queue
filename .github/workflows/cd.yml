@@ -1,0 +1,174 @@
+name: CD
+
+on:
+  # Auto-deploy after CI passes on main
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+  # Manual deploy button
+  workflow_dispatch:
+
+# Only one deploy at a time
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: self-hosted
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    env:
+      DEPLOY_DIR: /opt/forge
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      # ─── Checkout & Build ───────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build api and worker
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w -X main.version=${{ github.sha }}" \
+            -o bin/forge-api ./cmd/api
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w -X main.version=${{ github.sha }}" \
+            -o bin/forge-worker ./cmd/worker
+
+          echo "✅ Binaries built"
+          ls -lh bin/
+
+      # ─── Setup directories & systemd (first-time setup) ────────
+      - name: Setup deploy directory
+        run: |
+          sudo mkdir -p $DEPLOY_DIR/bin
+          sudo mkdir -p $DEPLOY_DIR/logs
+
+      - name: Install forge-api systemd service
+        run: |
+          sudo tee /etc/systemd/system/forge-api.service > /dev/null <<'EOF'
+          [Unit]
+          Description=Forge API Server
+          After=network.target redis.service
+          Wants=redis.service
+
+          [Service]
+          Type=simple
+          ExecStart=/opt/forge/bin/forge-api
+          WorkingDirectory=/opt/forge
+          Restart=on-failure
+          RestartSec=5
+          Environment=REDIS_URL=redis://localhost:6379
+          Environment=PORT=8080
+          StandardOutput=append:/opt/forge/logs/api.log
+          StandardError=append:/opt/forge/logs/api.log
+          LimitNOFILE=65535
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+      - name: Install forge-worker systemd service
+        run: |
+          sudo tee /etc/systemd/system/forge-worker.service > /dev/null <<'EOF'
+          [Unit]
+          Description=Forge Worker
+          After=network.target redis.service
+          Wants=redis.service
+
+          [Service]
+          Type=simple
+          ExecStart=/opt/forge/bin/forge-worker
+          WorkingDirectory=/opt/forge
+          Restart=on-failure
+          RestartSec=5
+          Environment=REDIS_URL=redis://localhost:6379
+          StandardOutput=append:/opt/forge/logs/worker.log
+          StandardError=append:/opt/forge/logs/worker.log
+          LimitNOFILE=65535
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+      - name: Reload systemd
+        run: sudo systemctl daemon-reload
+
+      # ─── Deploy ─────────────────────────────────────────────────
+      - name: Stop running services
+        run: |
+          sudo systemctl stop forge-api || true
+          sudo systemctl stop forge-worker || true
+          echo "⏹️  Services stopped"
+
+      - name: Copy new binaries
+        run: |
+          sudo cp bin/forge-api $DEPLOY_DIR/bin/forge-api
+          sudo cp bin/forge-worker $DEPLOY_DIR/bin/forge-worker
+          sudo chmod +x $DEPLOY_DIR/bin/forge-api
+          sudo chmod +x $DEPLOY_DIR/bin/forge-worker
+          echo "📦 Binaries deployed to $DEPLOY_DIR/bin/"
+
+      - name: Start services
+        run: |
+          sudo systemctl start forge-api
+          sudo systemctl start forge-worker
+          sudo systemctl enable forge-api
+          sudo systemctl enable forge-worker
+          echo "🚀 Services started"
+
+      # ─── Verify ─────────────────────────────────────────────────
+      - name: Health check
+        run: |
+          echo "Waiting for API to come up..."
+          sleep 3
+
+          for i in 1 2 3 4 5; do
+            if curl -sf http://localhost:8080/health; then
+              echo ""
+              echo "✅ API is healthy!"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 2s..."
+            sleep 2
+          done
+
+          echo "❌ Health check failed"
+          sudo journalctl -u forge-api --no-pager -n 20
+          exit 1
+
+      - name: Verify worker is running
+        run: |
+          if sudo systemctl is-active --quiet forge-worker; then
+            echo "✅ Worker is running"
+          else
+            echo "❌ Worker failed to start"
+            sudo journalctl -u forge-worker --no-pager -n 20
+            exit 1
+          fi
+
+      - name: Print deploy summary
+        if: always()
+        run: |
+          echo "══════════════════════════════════════"
+          echo "  Deploy Summary"
+          echo "══════════════════════════════════════"
+          echo "  Commit:  ${{ github.sha }}"
+          echo "  Branch:  ${{ github.ref_name }}"
+          echo "  Time:    $(date)"
+          echo ""
+          echo "  Service Status:"
+          echo "  ─────────────────────────────"
+          sudo systemctl is-active forge-api && echo "  API:     ✅ running" || echo "  API:     ❌ stopped"
+          sudo systemctl is-active forge-worker && echo "  Worker:  ✅ running" || echo "  Worker:  ❌ stopped"
+          echo "══════════════════════════════════════"
