@@ -28,8 +28,8 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ── Forge Worker ──────────────────────────────────────────────────────────
-  worker:
+  # ── Forge Worker (Email) ──────────────────────────────────────────────────
+  worker-email:
     build:
       context: .
       dockerfile: deploy/Dockerfile.worker
@@ -38,13 +38,43 @@ services:
       - REDIS_PASSWORD=
       - REDIS_DB=0
       - CONCURRENCY=5
-      - QUEUE_NAME=default
+      - QUEUE_NAME=send_email
     depends_on:
       redis:
         condition: service_healthy
     restart: unless-stopped
-    deploy:
-      replicas: 2
+
+  # ── Forge Worker (Image) ──────────────────────────────────────────────────
+  worker-image:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.worker
+    environment:
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - CONCURRENCY=5
+      - QUEUE_NAME=resize_image
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Forge Worker (Report) ─────────────────────────────────────────────────
+  worker-report:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.worker
+    environment:
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - CONCURRENCY=5
+      - QUEUE_NAME=generate_report
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
   # ── Forge Dashboard ───────────────────────────────────────────────────────
   dashboard:

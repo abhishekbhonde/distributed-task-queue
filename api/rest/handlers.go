@@ -167,8 +167,14 @@ type queueInfo struct {
 }
 
 func (s *Server) handleListQueues(w http.ResponseWriter, r *http.Request) {
-	// Hardcoded for now — will be made dynamic later.
 	names := []string{"default"}
+	if lister, ok := s.Queue.(interface {
+		ListQueues(ctx context.Context) ([]string, error)
+	}); ok {
+		if dynamicNames, err := lister.ListQueues(r.Context()); err == nil {
+			names = dynamicNames
+		}
+	}
 
 	result := make([]queueInfo, 0, len(names))
 	for _, name := range names {

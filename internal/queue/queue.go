@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -300,4 +301,39 @@ func (q *RedisQueue) ScanJobs(ctx context.Context) ([]*job.Job, error) {
 	}
 
 	return jobs, nil
+}
+
+// ListQueues scans Redis keys matching "forge:queue:*:pending" and returns
+// the queue names.
+func (q *RedisQueue) ListQueues(ctx context.Context) ([]string, error) {
+	var cursor uint64
+	keysMap := make(map[string]bool)
+	for {
+		var keys []string
+		var err error
+		keys, cursor, err = q.rdb.Scan(ctx, cursor, "forge:queue:*:pending", 100).Result()
+		if err != nil {
+			return nil, fmt.Errorf("queue: scan queues: %w", err)
+		}
+		for _, key := range keys {
+			parts := strings.Split(key, ":")
+			if len(parts) >= 3 {
+				keysMap[parts[2]] = true
+			}
+		}
+		if cursor == 0 {
+			break
+		}
+	}
+
+	names := make([]string, 0, len(keysMap))
+	for name := range keysMap {
+		names = append(names, name)
+	}
+
+	// Always ensure default is present
+	if !keysMap["default"] {
+		names = append(names, "default")
+	}
+	return names, nil
 }
