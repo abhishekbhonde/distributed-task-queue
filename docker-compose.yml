@@ -1,0 +1,50 @@
+services:
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # ── Forge API ─────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.api
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Forge Worker ──────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.worker
+    environment:
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - CONCURRENCY=5
+      - QUEUE_NAME=default
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+
+volumes:
+  redis-data:

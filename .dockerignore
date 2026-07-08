@@ -1,0 +1,24 @@
+# ── Version control ───────────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+*.md
+docs/
+
+# ── Deploy ────────────────────────────────────────────────────────────────────
+# NOTE: deploy/ is NOT excluded — Docker Compose reads Dockerfiles from
+# the build context, so they must be present.
+
+# ── Dashboard (frontend — separate build) ────────────────────────────────────
+dashboard/node_modules
+dashboard/.next
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
