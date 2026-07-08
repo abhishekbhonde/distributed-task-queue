@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 
+	"golang.org/x/net/websocket"
+
 	"github.com/abhishekbhonde/forge/internal/job"
 	"github.com/abhishekbhonde/forge/internal/queue"
 )
@@ -23,6 +25,7 @@ type Pinger interface {
 type Server struct {
 	Queue  queue.Queue
 	Pinger Pinger // optional; if nil, health check always returns ok
+	Hub    *Hub   // websocket hub
 }
 
 // NewRouter returns an http.Handler with all Forge REST routes registered.
@@ -42,6 +45,11 @@ func NewRouter(s *Server) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	// WebSocket real-time subscription.
+	if s.Hub != nil {
+		mux.Handle("GET /ws", websocket.Handler(s.handleWebSocket))
+	}
 
 	// Job endpoints.
 	mux.HandleFunc("POST /api/jobs", s.handleEnqueue)

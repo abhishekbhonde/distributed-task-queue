@@ -46,5 +46,18 @@ services:
     deploy:
       replicas: 2
 
+  # ── Forge Dashboard ───────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   redis-data:

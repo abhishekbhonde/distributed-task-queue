@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/abhishekbhonde/forge/api/rest"
+	"github.com/abhishekbhonde/forge/internal/job"
 	"github.com/abhishekbhonde/forge/internal/queue"
 	"github.com/abhishekbhonde/forge/internal/storage"
 )
@@ -73,13 +75,29 @@ func main() {
 
 	log.Println("redis connected ✓")
 
+	// ── WebSocket Hub ────────────────────────────────────────────────────
+	hub := rest.NewHub()
+	hubCtx, hubCancel := context.WithCancel(context.Background())
+	defer hubCancel()
+	go hub.Run(hubCtx)
+
 	// ── Queue ────────────────────────────────────────────────────────────
 	q := queue.NewRedisQueue(storageClient)
+	q.OnChange = func(j *job.Job) {
+		msg, err := json.Marshal(map[string]any{
+			"event": "job_updated",
+			"job":   j,
+		})
+		if err == nil {
+			hub.Broadcast(msg)
+		}
+	}
 
 	// ── REST server ──────────────────────────────────────────────────────
 	server := &rest.Server{
 		Queue:  q,
 		Pinger: storageClient,
+		Hub:    hub,
 	}
 	handler := rest.NewRouter(server)
 

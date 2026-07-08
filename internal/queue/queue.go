@@ -46,7 +46,8 @@ type Queue interface {
 
 // RedisQueue implements Queue backed by Redis sorted sets.
 type RedisQueue struct {
-	rdb *redis.Client
+	rdb      *redis.Client
+	OnChange func(*job.Job)
 }
 
 // NewRedisQueue creates a RedisQueue that uses the given storage.Client.
@@ -77,6 +78,10 @@ func (q *RedisQueue) Enqueue(ctx context.Context, j *job.Job) error {
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("queue: enqueue pipeline: %w", err)
+	}
+
+	if q.OnChange != nil {
+		q.OnChange(j)
 	}
 	return nil
 }
@@ -112,6 +117,10 @@ func (q *RedisQueue) Dequeue(ctx context.Context, queueName string) (*job.Job, e
 			if err := q.save(ctx, j); err != nil {
 				return nil, err
 			}
+
+			if q.OnChange != nil {
+				q.OnChange(j)
+			}
 			return j, nil
 		}
 
@@ -135,7 +144,14 @@ func (q *RedisQueue) Ack(ctx context.Context, jobID string) error {
 	}
 	j.Status = job.StatusSucceeded
 	j.UpdatedAt = time.Now().UTC()
-	return q.save(ctx, j)
+	if err := q.save(ctx, j); err != nil {
+		return err
+	}
+
+	if q.OnChange != nil {
+		q.OnChange(j)
+	}
+	return nil
 }
 
 // ─── Nack ────────────────────────────────────────────────────────────────────
@@ -161,7 +177,14 @@ func (q *RedisQueue) Nack(ctx context.Context, jobID string, errMsg string) erro
 		if err := q.save(ctx, j); err != nil {
 			return err
 		}
-		return q.rdb.RPush(ctx, storage.QueueDeadKey(j.Type), j.ID).Err()
+		if err := q.rdb.RPush(ctx, storage.QueueDeadKey(j.Type), j.ID).Err(); err != nil {
+			return err
+		}
+
+		if q.OnChange != nil {
+			q.OnChange(j)
+		}
+		return nil
 	}
 
 	// Re-enqueue with a delay score.
@@ -173,10 +196,17 @@ func (q *RedisQueue) Nack(ctx context.Context, jobID string, errMsg string) erro
 	delay := retry.DefaultBackoff.NextDelay(j.Attempts)
 	score := float64(time.Now().Add(delay).Unix())
 
-	return q.rdb.ZAdd(ctx, storage.QueuePendingKey(j.Type), redis.Z{
+	if err := q.rdb.ZAdd(ctx, storage.QueuePendingKey(j.Type), redis.Z{
 		Score:  score,
 		Member: j.ID,
-	}).Err()
+	}).Err(); err != nil {
+		return err
+	}
+
+	if q.OnChange != nil {
+		q.OnChange(j)
+	}
+	return nil
 }
 
 // ─── Get ─────────────────────────────────────────────────────────────────────
@@ -219,4 +249,55 @@ func (q *RedisQueue) save(ctx context.Context, j *job.Job) error {
 		return fmt.Errorf("queue: marshal job: %w", err)
 	}
 	return q.rdb.Set(ctx, storage.JobKey(j.ID), data, 0).Err()
+}
+
+// ScanJobs scans all Redis keys matching "forge:job:*" and returns
+// their deserialized job representations.
+func (q *RedisQueue) ScanJobs(ctx context.Context) ([]*job.Job, error) {
+	var cursor uint64
+	var keys []string
+	for {
+		var k []string
+		var err error
+		k, cursor, err = q.rdb.Scan(ctx, cursor, "forge:job:*", 100).Result()
+		if err != nil {
+			return nil, fmt.Errorf("queue: scan jobs: %w", err)
+		}
+		keys = append(keys, k...)
+		if cursor == 0 {
+			break
+		}
+	}
+
+	if len(keys) == 0 {
+		return []*job.Job{}, nil
+	}
+
+	pipe := q.rdb.Pipeline()
+	cmds := make([]*redis.StringCmd, len(keys))
+	for i, key := range keys {
+		cmds[i] = pipe.Get(ctx, key)
+	}
+	_, err := pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		return nil, fmt.Errorf("queue: pipeline get jobs: %w", err)
+	}
+
+	var jobs []*job.Job
+	for _, cmd := range cmds {
+		data, err := cmd.Bytes()
+		if err != nil {
+			if err == redis.Nil {
+				continue
+			}
+			return nil, fmt.Errorf("queue: read job: %w", err)
+		}
+		var j job.Job
+		if err := json.Unmarshal(data, &j); err != nil {
+			return nil, fmt.Errorf("queue: unmarshal scanned job: %w", err)
+		}
+		jobs = append(jobs, &j)
+	}
+
+	return jobs, nil
 }
