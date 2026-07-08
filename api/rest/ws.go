@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net/http"
+
 	"golang.org/x/net/websocket"
+
 	"github.com/abhishekbhonde/forge/internal/job"
 )
 
@@ -114,4 +117,16 @@ func (s *Server) handleWebSocket(ws *websocket.Conn) {
 			break
 		}
 	}
+}
+
+// wsHandler wraps handleWebSocket in a Server that bypasses the default CORS/origin check.
+func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
+	wsServer := websocket.Server{
+		Handshake: func(config *websocket.Config, req *http.Request) error {
+			// Accept any origin during handshake
+			return nil
+		},
+		Handler: websocket.Handler(s.handleWebSocket),
+	}
+	wsServer.ServeHTTP(w, r)
 }

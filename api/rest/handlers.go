@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"strings"
 
-	"golang.org/x/net/websocket"
-
 	"github.com/abhishekbhonde/forge/internal/job"
 	"github.com/abhishekbhonde/forge/internal/queue"
 )
@@ -48,7 +46,7 @@ func NewRouter(s *Server) http.Handler {
 
 	// WebSocket real-time subscription.
 	if s.Hub != nil {
-		mux.Handle("GET /ws", websocket.Handler(s.handleWebSocket))
+		mux.HandleFunc("GET /ws", s.wsHandler)
 	}
 
 	// Job endpoints.
@@ -59,7 +57,7 @@ func NewRouter(s *Server) http.Handler {
 	// Queue endpoints.
 	mux.HandleFunc("GET /api/queues", s.handleListQueues)
 
-	return mux
+	return enableCORS(mux)
 }
 
 // ─── Enqueue ─────────────────────────────────────────────────────────────────
@@ -196,4 +194,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // writeError responds with a JSON error body: {"error": msg}.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// enableCORS wraps an http.Handler with basic CORS header configuration
+// and handles Preflight OPTIONS requests.
+func enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
